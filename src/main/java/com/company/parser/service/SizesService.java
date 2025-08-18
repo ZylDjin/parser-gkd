@@ -1,53 +1,65 @@
 package com.company.parser.service;
 
+
+import com.company.parser.config.SizesConfig;
 import com.company.parser.core.Category;
 import com.company.parser.core.Competitor;
 import com.company.parser.core.SizeKey;
-import com.company.parser.core.SizesConfig;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.io.InputStream;
-import java.nio.file.Path;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
+/**
+ * Обёртка над SizesConfig: удобные методы для получения базового конкурента,
+ * списка размеров и базовых URL'ов по категории/конкуренту.
+ */
 @Service
 public class SizesService {
-    private final ResourceLoader loader;
 
-    public SizesService(ResourceLoader loader) {
-        this.loader = loader;
+    private static final Logger log = LoggerFactory.getLogger(SizesService.class);
+
+    private final SizesConfig sizesConfig;
+
+    public SizesService(SizesConfig sizesConfig) {
+        this.sizesConfig = sizesConfig;
     }
 
-    public SizesConfig load(String resourceLocation) throws Exception {
-        Resource r = loader.getResource(resourceLocation);
-        if (!r.exists()) throw new IllegalArgumentException("sizes.yml not found: " + resourceLocation);
-        if (resourceLocation.startsWith("file:")) {
-            return SizesConfig.load(Path.of(r.getURI()));
+    /** Базовый конкурент для категории (обычно DEMIDOV). */
+    public Competitor baseline(Category category) {
+        var b = sizesConfig.baseline(category);
+        log.debug("[SizesService] baseline {} -> {}", category, b);
+        return b;
+    }
+
+    /** Список размеров для категории (общий список, если у конкурента нет оверрайда). */
+    public List<SizeKey> sizes(Category category) {
+        var list = sizesConfig.sizes(category);
+        log.debug("[SizesService] sizes {} -> {}", category, list);
+        return list;
+    }
+
+    /**
+     * Список размеров с учётом оверрайда для конкретного конкурента.
+     * Если в конфиге у конкурента задан свой список — берём его, иначе общий.
+     */
+    public List<SizeKey> sizes(Category category, Competitor competitor) {
+        var overridden = sizesConfig.sizes(category, competitor);
+        if (overridden != null && !overridden.isEmpty()) {
+            log.debug("[SizesService] sizes {} / {} (override) -> {}", category, competitor, overridden);
+            return overridden;
         }
-        try (InputStream is = r.getInputStream()) {
-            return SizesConfig.load(is);
-        }
+        return sizes(category);
     }
 
-    public List<SizeKey> sizesUnion(SizesConfig cfg, Category cat) {
-        return cfg.sizesUnion(cat);
+    /** Базовый URL конкурента по категории (если не задан, вернётся null — парсер возьмёт из AppProperties). */
+    public String baseUrl(Category category, Competitor competitor) {
+        return sizesConfig.baseUrl(category, competitor);
     }
 
-    public boolean hasSize(SizesConfig cfg, Competitor c, Category cat, SizeKey s) {
-        return cfg.hasSize(c, cat, s);
-    }
-
-    public Set<Competitor> enabledCompetitors(List<String> names) {
-        Set<Competitor> set = new LinkedHashSet<>();
-        if (names != null) {
-            for (String n : names) {
-                try { set.add(Competitor.valueOf(n)); } catch (Exception ignore) {}
-            }
-        }
-        return set;
+    /** Доступные в конфиге категории. */
+    public Set<Category> categories() {
+        return sizesConfig.categories();
     }
 }

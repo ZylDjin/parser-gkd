@@ -1,75 +1,38 @@
 package com.company.parser.runner;
 
-import com.company.parser.config.AppProperties;
-import com.company.parser.core.*;
-import com.company.parser.service.*;
+import com.company.parser.core.Category;
+import com.company.parser.service.CrawlService;
+import com.company.parser.service.ExportService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
-
+/**
+ * Запуск: парсинг Демидов + сравнение с AGRUPP, экспорт в MatrixT.
+ * Убедись, что в application.yml включены DEMIDOV и AGRUPP,
+ * а в competitorsBaseUrls задан URL Демидова.
+ */
 @Component
 public class CrawlRunner implements CommandLineRunner {
+    private static final Logger log = LoggerFactory.getLogger(CrawlRunner.class);
 
-    private final AppProperties props;
-    private final SizesService sizesService;
-    private final SnapshotService snapshotService;
     private final CrawlService crawlService;
     private final ExportService exportService;
 
-    public CrawlRunner(AppProperties props,
-                       SizesService sizesService,
-                       SnapshotService snapshotService,
-                       CrawlService crawlService,
-                       ExportService exportService) {
-        this.props = props;
-        this.sizesService = sizesService;
-        this.snapshotService = snapshotService;
+    public CrawlRunner(CrawlService crawlService, ExportService exportService) {
         this.crawlService = crawlService;
         this.exportService = exportService;
     }
 
     @Override
     public void run(String... args) throws Exception {
-        Category category = Category.SP;
+        final Category category = Category.SP; // профильные трубы
 
-        SizesConfig cfg = sizesService.load(props.getSizesResource());
-        var sizes = sizesService.sizesUnion(cfg, category);
-        if (sizes.isEmpty()) {
-            System.out.println("sizes.yml не содержит размеров для " + category);
-            return;
-        }
+        log.info("[CrawlRunner] Start crawl for {}", category);
+        var snapshot = crawlService.crawl(category);
 
-        // включённые конкуренты
-        Set<Competitor> active = sizesService.enabledCompetitors(props.getCompetitorsEnabled());
-
-        Snapshot prev = snapshotService.loadPrev();
-
-        // основной сбор
-        var rows = crawlService.crawl(category, sizes, active, cfg, prev);
-
-        // снимок текущих new-цен
-        Snapshot cur = new Snapshot();
-        int foundNew = 0;
-        for (var row : rows) {
-            for (var e : row.newPrice.entrySet()) {
-                if (e.getValue() != null) {
-                    cur.put(category, row.size, e.getKey(), e.getValue());
-                    foundNew++;
-                }
-            }
-        }
-        snapshotService.saveCur(cur);
-        System.out.println("Saved snapshot_cur.csv");
-        if (foundNew > 0) {
-            snapshotService.advanceBaseline();
-            System.out.println("Baseline advanced: snapshot_prev.csv updated.");
-        } else {
-            System.out.println("Baseline NOT advanced (no new prices found).");
-        }
-
-        var out = exportService.exportMatrix(category, rows, props.getExportPath());
-        System.out.println("Excel report written: " + out.toAbsolutePath());
-        System.out.println("Done.");
+        var out = exportService.exportTransposedDefault(category, snapshot);
+        log.info("[CrawlRunner] Excel report written: {}", out);
     }
 }

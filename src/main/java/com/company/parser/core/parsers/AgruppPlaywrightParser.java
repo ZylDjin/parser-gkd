@@ -1,147 +1,156 @@
 package com.company.parser.core.parsers;
 
+
+import com.company.parser.config.AppProperties;
+import com.company.parser.config.SizesConfig;
 import com.company.parser.core.*;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.LoadState;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
 public class AgruppPlaywrightParser implements SiteParser {
 
-    private String baseUrl = "https://ag.market/catalog/truby-stalnye/truby-profilnye/";
+    private static final Logger log = LoggerFactory.getLogger(AgruppPlaywrightParser.class);
 
-    public void setBaseUrl(String url) {
-        this.baseUrl = url.endsWith("/") ? url : url + "/";
+    private final AppProperties props;
+    private final SizesConfig sizesConfig;
+
+    public AgruppPlaywrightParser(AppProperties props, SizesConfig sizesConfig) {
+        this.props = props;
+        this.sizesConfig = sizesConfig;
     }
 
-    @Override public Competitor competitor() { return Competitor.AGRUPP; }
+    @Override
+    public Competitor competitor() {
+        return Competitor.AGRUPP;
+    }
 
     @Override
     public List<PriceVariant> fetch(Category category, SizeKey size) throws Exception {
+        String baseUrl = sizesConfig.baseUrl(category, competitor());
+        if (baseUrl == null) baseUrl = props.getCompetitorsBaseUrls().get(competitor());
+        if (baseUrl == null) throw new IllegalStateException("Base URL for AGRUPP is not configured");
+
+        // У AGRUPP толщина идёт с дефисом: 1-5
+        String sizeSlug = size.width() + "x" + size.height() + "x" + size.thicknessDash(); // 40x20x1-5
+        String sizeUrl = joinUrl(baseUrl, sizeSlug) + "/";
+
         List<PriceVariant> out = new ArrayList<>();
 
-        String slug = toSizeSlug(size);
-        String sizeUrl = baseUrl + slug + "/";
-        String htmlSize = loadRenderedHtml(sizeUrl, Path.of("debug","debug_agrupp_size_" + slug + ".html"), true);
-        if (htmlSize != null) out.addAll(extract(htmlSize, size, true));
-
-        if (out.isEmpty()) {
-            String htmlCat = loadRenderedHtml(baseUrl, Path.of("debug","debug_agrupp_category.html"), false);
-            if (htmlCat != null) out.addAll(extract(htmlCat, size, false));
-        }
-
-        System.out.println("[AGRUPP/PW] total variants matched: " + out.size());
-        return out;
-    }
-
-    private String loadRenderedHtml(String url, Path dump, boolean sizePage) {
         try (Playwright pw = Playwright.create()) {
             Browser browser = pw.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
-            BrowserContext ctx = browser.newContext(new Browser.NewContextOptions().setViewportSize(1366, 2200));
+            BrowserContext ctx = browser.newContext();
             Page page = ctx.newPage();
-            page.setDefaultTimeout(25_000);
 
-            System.out.println("[AGRUPP/PW] GET " + url);
-            page.navigate(url);
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            // 1) Пытаемся на size-странице
+            log.info("[AGRUPP/PW] GET {}", sizeUrl);
+            page.navigate(sizeUrl);
+            page.waitForLoadState(LoadState.NETWORKIDLE);
+            // иногда карточки дорисовываются позднее
+            page.waitForTimeout(700);
+            save(page, "debug_agrupp_size_" + sizeSlug);
 
-            for (int i = 0; i < 6; i++) { page.mouse().wheel(0, 1500); page.waitForTimeout(350); }
-            // показать ещё, если есть
-            for (int i = 0; i < 10; i++) {
-                Locator more = page.locator("button:has-text(\"Показать ещё\"), button:has-text(\"Показать еще\"), button:has-text(\"Еще\")");
-                if (!more.isVisible()) break;
-                try { more.click(); page.waitForTimeout(800); } catch (Exception ignore) { break; }
+            List<BigDecimal> nearPrices = extractPricesNearSize(page.content(), size, true);
+            log.info("[AGRUPP/PW] near-window matches (size page): {}", nearPrices.size());
+            for (BigDecimal p : nearPrices) out.add(new PriceVariant(p, "-"));
+
+            // 2) Если не нашли — идём в категорию
+            if (out.isEmpty()) {
+                log.info("[AGRUPP/PW] GET {}", baseUrl);
+                page.navigate(baseUrl);
+                page.waitForLoadState(LoadState.NETWORKIDLE);
+                page.waitForTimeout(900);
+                save(page, "debug_agrupp_category");
+
+                List<BigDecimal> nearCategory = extractPricesNearSize(page.content(), size, true);
+                log.info("[AGRUPP/PW] near-window matches (category): {}", nearCategory.size());
+                for (BigDecimal p : nearCategory) out.add(new PriceVariant(p, "-"));
             }
 
-            String html = page.content();
-            Files.createDirectories(dump.getParent());
-            Files.writeString(dump, html, StandardCharsets.UTF_8);
-            System.out.println("[AGRUPP/PW] saved " + dump.toAbsolutePath());
+            page.close();
+            ctx.close();
             browser.close();
-            return html;
-        } catch (Exception e) {
-            System.out.println("[AGRUPP/PW] WARN " + e.getMessage());
-            return null;
         }
-    }
 
-    private List<PriceVariant> extract(String html, SizeKey size, boolean isSizePage) {
-        Document doc = Jsoup.parse(html);
-        List<PriceVariant> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-
-        var candidates = doc.select("article, li, div.catalog-item, div.product-card, div");
-        Pattern pSize = sizeRegex(size);
-
-        for (Element el : candidates) {
-            String text = el.text();
-            if (text == null || text.isBlank()) continue;
-            if (!isSizePage && !pSize.matcher(text).find()) continue;
-
-            BigDecimal price = extractPrice(el);
-            if (price == null) continue;
-
-            String key = price.toPlainString();
-            if (!seen.add(key)) continue;
-
-            boolean gost = text.toUpperCase(Locale.ROOT).contains("ГОСТ");
-            boolean tu   = text.toUpperCase(Locale.ROOT).contains("ТУ");
-
-            out.add(new PriceVariant(price, gost, tu, "pw"));
-            if (out.size() >= 6) break;
-        }
+        log.info("[AGRUPP/PW] total variants matched: {}", out.size());
         return out;
     }
 
-    private static BigDecimal extractPrice(Element el) {
-        // частые селекторы цен
-        String[] sels = {".price__current",".product-price__current",".product-card__price","[itemprop=price]","meta[itemprop=price]"};
-        for (String s : sels) {
-            var node = el.selectFirst(s);
-            if (node == null) continue;
-            String raw = node.hasAttr("content") ? node.attr("content") : node.text();
-            BigDecimal v = parsePrice(raw);
-            if (v != null) return v;
+    // --- утилиты ---
+
+    private void save(Page page, String fileNameNoExt) {
+        try {
+            Path dir = Path.of(props.getDebugDir());
+            dir.toFile().mkdirs();
+            String p = dir.resolve(fileNameNoExt + ".html").toString();
+            page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve(fileNameNoExt + ".png")));
+            java.nio.file.Files.writeString(dir.resolve(fileNameNoExt + ".html"), page.content());
+            log.info("[AGRUPP/PW] saved {}", p);
+        } catch (Exception ignore) {
         }
-        String txt = el.text();
-        if (txt.contains("₽")) return parsePrice(txt);
-        return null;
     }
 
-    private static Pattern sizeRegex(SizeKey size) {
-        String a = size.a().stripTrailingZeros().toPlainString();
-        String b = size.b().stripTrailingZeros().toPlainString();
-        String t = size.t().stripTrailingZeros().toPlainString();
-        String x = "[x×Xх*]";
-        String sep = "\\s*";
-        String tAlt = t.contains(".") ? t.replace('.', ',') : t + "(?:[\\.,]0)?";
-        String mm = "(?:\\s*мм)?";
-        String p1 = a + sep + x + sep + b + sep + x + sep + tAlt + mm;
-        String p2 = b + sep + x + sep + a + sep + x + sep + tAlt + mm;
-        return Pattern.compile("(?i)(" + p1 + ")|(" + p2 + ")");
+    private static String joinUrl(String base, String slug) {
+        if (!base.endsWith("/")) base = base + "/";
+        return base + slug;
     }
 
-    private static String toSizeSlug(SizeKey s) {
-        String a = s.a().stripTrailingZeros().toPlainString();
-        String b = s.b().stripTrailingZeros().toPlainString();
-        String t = s.t().stripTrailingZeros().toPlainString().replace('.', '-');
-        return a + "x" + b + "x" + t;
+    /**
+     * Ищем цену в окне вокруг упоминания размера; для AGRUPP дополнительно допускаем толщину с дефисом.
+     */
+    private static List<BigDecimal> extractPricesNearSize(String html, SizeKey size, boolean allowDashThickness) {
+        String sizeRegex = sizePattern(size, allowDashThickness);
+        Pattern needle = Pattern.compile(sizeRegex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+        List<int[]> windows = new ArrayList<>();
+        Matcher m = needle.matcher(html);
+        while (m.find()) {
+            int start = Math.max(0, m.start() - 800);
+            int end = Math.min(html.length(), m.end() + 800);
+            windows.add(new int[]{start, end});
+        }
+        if (windows.isEmpty()) return List.of();
+
+        Pattern priceRe = Pattern.compile(
+                "(?<!\\d)(\\d{2}\\s?\\d{3}|\\d{5,6})(?=\\s*(?:₽|руб))",
+                Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+        List<BigDecimal> found = new ArrayList<>();
+        for (int[] w : windows) {
+            String chunk = html.substring(w[0], w[1]);
+            Matcher pm = priceRe.matcher(chunk);
+            while (pm.find()) {
+                String raw = pm.group(1).replace(" ", "");
+                try {
+                    BigDecimal val = new BigDecimal(raw);
+                    found.add(val);
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return found;
     }
 
-    private static BigDecimal parsePrice(String raw) {
-        if (raw == null) return null;
-        String digits = raw.replaceAll("[^\\d]", "");
-        if (digits.isEmpty()) return null;
-        try { return new BigDecimal(digits); } catch (NumberFormatException e) { return null; }
+    private static String sizePattern(SizeKey s, boolean allowDashThickness) {
+        String n1 = String.valueOf(s.width());
+        String n2 = String.valueOf(s.height());
+        String tDot = s.thicknessDot();        // 1.5
+        String tComma = tDot.replace('.', ','); // 1,5
+        String tDash = s.thicknessDash();       // 1-5
+        String x = "[x×]";
+        String sp = "\\s*";
+        // допускаем обе записи толщины
+        String tAlt = allowDashThickness
+                ? "(" + Pattern.quote(tDot) + "|" + Pattern.quote(tComma) + "|" + Pattern.quote(tDash) + ")"
+                : "(" + Pattern.quote(tDot) + "|" + Pattern.quote(tComma) + ")";
+        return n1 + sp + x + sp + n2 + sp + x + sp + tAlt;
     }
 }

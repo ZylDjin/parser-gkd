@@ -1,67 +1,111 @@
 package com.company.parser.core;
 
-import com.company.parser.core.parsers.SiteParser;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.*;
 
+/**
+ * Собирает построчные данные из Snapshot для дальнейшего вывода/экспорта.
+ * Совместим с текущим ExcelExporter (лист Matrix).
+ */
 @Service
 public class ReportCalculator {
 
+    /**
+     * Одна строка отчёта по конкретному размеру.
+     */
     public static final class Row {
-        public final SizeKey size;
-        public final EnumMap<Competitor, BigDecimal> oldPrice = new EnumMap<>(Competitor.class);
-        public final EnumMap<Competitor, BigDecimal> newPrice = new EnumMap<>(Competitor.class);
-        public final EnumMap<Competitor, BigDecimal> diff     = new EnumMap<>(Competitor.class);
-        public BigDecimal minNew, avgNew, deltaFromOur;
+        private final SizeKey size;
 
-        public Row(SizeKey size) { this.size = size; }
+        /** baseline-конкурент (например, DEMIDOV) — его новая цена. */
+        private final BigDecimal baselineNew;
+
+        /** Цены по конкурента́м (кроме baseline): comp -> new. */
+        private final Map<Competitor, BigDecimal> newByCompetitor;
+
+        /** Дельта к baseline для каждого конкурента (new − baseline). */
+        private final Map<Competitor, BigDecimal> deltaByCompetitor;
+
+        /** Максимальная цена среди конкурентов (кроме baseline). */
+        private final BigDecimal maxNew;
+
+        /** Δ(MAX − baseline). */
+        private final BigDecimal deltaMaxBaseline;
+
+        public Row(SizeKey size,
+                   BigDecimal baselineNew,
+                   Map<Competitor, BigDecimal> newByCompetitor,
+                   Map<Competitor, BigDecimal> deltaByCompetitor,
+                   BigDecimal maxNew,
+                   BigDecimal deltaMaxBaseline) {
+            this.size = size;
+            this.baselineNew = baselineNew;
+            this.newByCompetitor = Collections.unmodifiableMap(new LinkedHashMap<>(newByCompetitor));
+            this.deltaByCompetitor = Collections.unmodifiableMap(new LinkedHashMap<>(deltaByCompetitor));
+            this.maxNew = maxNew;
+            this.deltaMaxBaseline = deltaMaxBaseline;
+        }
+
+        public SizeKey getSize() { return size; }
+        public BigDecimal getBaselineNew() { return baselineNew; }
+        public Map<Competitor, BigDecimal> getNewByCompetitor() { return newByCompetitor; }
+        public Map<Competitor, BigDecimal> getDeltaByCompetitor() { return deltaByCompetitor; }
+        public BigDecimal getMaxNew() { return maxNew; }
+        public BigDecimal getDeltaMaxBaseline() { return deltaMaxBaseline; }
     }
 
-    public Row calcRow(Category cat, SizeKey size,
-                       List<SiteParser> parsers,
-                       PriceSelectorService selector,
-                       Snapshot oldSnap,
-                       Map<SizeKey, BigDecimal> ourPrice) throws Exception {
+    /**
+     * Строит строки для листа Matrix.
+     *
+     * @param category  категория (например, Category.SP)
+     * @param sizes     список размеров (в нужном порядке строк)
+     * @param enabled   конкуренты в порядке колонок (как в application.yml), включает baseline
+     * @param snapshot  текущий снапшот (минимальные валидные цены по конкурентам)
+     * @param baseline  baseline-конкурент (из SizesConfig)
+     */
+    public List<Row> buildRows(Category category,
+                               List<SizeKey> sizes,
+                               List<Competitor> enabled,
+                               Snapshot snapshot,
+                               Competitor baseline) {
 
-        Row r = new Row(size);
+        Objects.requireNonNull(category, "category");
+        Objects.requireNonNull(sizes, "sizes");
+        Objects.requireNonNull(enabled, "enabled");
+        Objects.requireNonNull(snapshot, "snapshot");
+        Objects.requireNonNull(baseline, "baseline");
 
-        // 1) читаем old из снапшота
-        for (Competitor c : Competitor.values()) {
-            BigDecimal old = oldSnap.get(cat, size, c);
-            if (old != null) r.oldPrice.put(c, old);
-        }
+        // список «прочих» конкурентов (для колонок и MAX)
+        List<Competitor> others = new ArrayList<>();
+        for (Competitor c : enabled) if (c != baseline) others.add(c);
 
-        // 2) собираем варианты new у каждого парсера
-        for (SiteParser p : parsers) {
-            var variants = p.fetch(cat, size);
-            BigDecimal sel = selector.selectNewPrice(variants);
-            if (sel != null) r.newPrice.put(p.competitor(), sel);
-        }
+        List<Row> rows = new ArrayList<>(sizes.size());
 
-        // 3) diff (new - old)
-        for (Competitor c : Competitor.values()) {
-            BigDecimal n = r.newPrice.get(c);
-            BigDecimal o = r.oldPrice.get(c);
-            if (n != null && o != null) r.diff.put(c, n.subtract(o));
-        }
+        for (SizeKey size : sizes) {
+            BigDecimal base = snapshot.get(category, size, baseline);
 
-        // 4) агрегаты
-        if (!r.newPrice.isEmpty()) {
-            var values = r.newPrice.values().stream().filter(Objects::nonNull).toList();
-            if (!values.isEmpty()) {
-                r.minNew = values.stream().min(Comparator.naturalOrder()).orElse(null);
-                r.avgNew = values.stream().mapToLong(BigDecimal::longValue).average().isPresent()
-                        ? BigDecimal.valueOf(values.stream().mapToLong(BigDecimal::longValue).average().getAsDouble()).setScale(0, BigDecimal.ROUND_HALF_UP)
-                        : null;
+            Map<Competitor, BigDecimal> newBy = new LinkedHashMap<>();
+            Map<Competitor, BigDecimal> deltaBy = new LinkedHashMap<>();
+
+            BigDecimal max = null;
+            for (Competitor comp : others) {
+                BigDecimal p = snapshot.get(category, size, comp);
+                newBy.put(comp, p);
+
+                BigDecimal d = (p != null && base != null) ? p.subtract(base) : null;
+                deltaBy.put(comp, d);
+
+                if (p != null) {
+                    max = (max == null || p.compareTo(max) > 0) ? p : max;
+                }
             }
+
+            BigDecimal dMax = (max != null && base != null) ? max.subtract(base) : null;
+
+            rows.add(new Row(size, base, newBy, deltaBy, max, dMax));
         }
 
-        // 5) delta(min - our) — чтобы не ломать старый консольный вывод (в Excel не используется)
-        BigDecimal our = ourPrice.get(size);
-        if (our != null && r.minNew != null) r.deltaFromOur = r.minNew.subtract(our);
-
-        return r;
+        return rows;
     }
 }

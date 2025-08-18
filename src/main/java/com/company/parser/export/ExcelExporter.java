@@ -1,218 +1,144 @@
 package com.company.parser.export;
 
+
 import com.company.parser.core.Category;
 import com.company.parser.core.Competitor;
-import com.company.parser.core.ReportCalculator;
 import com.company.parser.core.SizeKey;
+import com.company.parser.config.SizesConfig;
+import com.company.parser.core.Snapshot;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.ss.util.RegionUtil;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.io.FileOutputStream;
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * Экспорт отчёта в XLSX.
+ * "Перевёрнутая" матрица: размеры — СТОЛБЦЫ, компании — СТРОКИ.
+ * Структура листа MatrixT:
+ *   A: Компания
+ *   B: Показатель (new, Δ(new-<baseline>))
+ *   C..: по одному столбцу на каждый размер (в порядке sizesOrdered).
+ */
 @Component
 public class ExcelExporter {
 
-    public Path export(Category category,
-                       List<ReportCalculator.Row> rows,
-                       Path outFile) throws Exception {
+    private static final Logger log = LoggerFactory.getLogger(ExcelExporter.class);
+
+    public void exportMatrixTransposed(Path out,
+                                       Snapshot snapshot,
+                                       Category category,
+                                       List<SizeKey> sizesOrdered,
+                                       List<Competitor> enabledOrdered,
+                                       SizesConfig sizesConfig) throws IOException {
+
+        Competitor baseline = sizesConfig.getBaselineCompetitor();
+        log.info("[ExcelExporter] Writing TRANSPOSED matrix -> {}, category={}, baseline={}, sizes={}, competitors={}",
+                out.toAbsolutePath(), category, baseline, sizesOrdered.size(), enabledOrdered);
+
         try (Workbook wb = new XSSFWorkbook()) {
-            Styles st = new Styles(wb);
-            buildMatrixSheet(wb, st, category, rows);
+            // новый лист с уникальным именем, чтобы было очевидно, что ты смотришь новый отчёт
+            Sheet sh = wb.createSheet("MatrixT");
 
-            try (FileOutputStream fos = new FileOutputStream(outFile.toFile())) {
-                wb.write(fos);
-            }
-        }
-        return outFile;
-    }
+            // ===== стили =====
+            CreationHelper ch = wb.getCreationHelper();
 
-    private void buildMatrixSheet(Workbook wb, Styles st, Category category, List<ReportCalculator.Row> rows) {
-        final Competitor BASELINE = Competitor.DEMIDOV;
-        Sheet sh = wb.createSheet("Matrix");
+            CellStyle head = wb.createCellStyle();
+            Font headFont = wb.createFont();
+            headFont.setBold(true);
+            head.setFont(headFont);
+            head.setAlignment(HorizontalAlignment.CENTER);
 
-        Row info = sh.createRow(0);
-        set(info, 0, "Сформировано: " + now(), st.muted);
-        set(info, 1, "Категория: " + category, st.muted);
+            CellStyle text = wb.createCellStyle();
 
-        // размеры -> столбцы
-        List<SizeKey> sizes = new ArrayList<>();
-        Map<String, ReportCalculator.Row> bySize = new LinkedHashMap<>();
-        for (ReportCalculator.Row r : rows) {
-            sizes.add(r.size);
-            bySize.put(r.size.toString(), r);
-        }
-        sizes.sort(Comparator.comparing(SizeKey::toString));
+            CellStyle num = wb.createCellStyle();
+            num.setDataFormat(ch.createDataFormat().getFormat("#,##0"));
 
-        int r0 = 2;
-        Row h = sh.createRow(r0);
-        int col = 0;
-        set(h, col++, "Компания", st.head);
-        set(h, col++, "Метрика", st.head);
-        for (SizeKey s : sizes) set(h, col++, s.toString(), st.head);
+            CellStyle diffPos = wb.createCellStyle();
+            diffPos.cloneStyleFrom(num);
+            diffPos.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
+            diffPos.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
-        // baseline по размерам
-        Map<SizeKey, BigDecimal> baseNew = new HashMap<>();
-        for (SizeKey s : sizes) {
-            ReportCalculator.Row rr = bySize.get(s.toString());
-            baseNew.put(s, rr == null ? null : rr.newPrice.get(BASELINE));
-        }
+            CellStyle diffNeg = wb.createCellStyle();
+            diffNeg.cloneStyleFrom(num);
+            diffNeg.setFillForegroundColor(IndexedColors.ROSE.getIndex());
+            diffNeg.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
-        int r = r0 + 1;
-
-        // baseline first
-        Row newRow = sh.createRow(r++);
-        set(newRow, 0, title(BASELINE), st.text);
-        set(newRow, 1, "new", st.text);
-        int c = 2;
-        for (SizeKey s : sizes) set(newRow, c++, baseNew.get(s), st.num);
-
-        // остальные
-        for (Competitor comp : Competitor.values()) {
-            if (comp == BASELINE) continue;
-
-            Row rowNew = sh.createRow(r++);
-            set(rowNew, 0, title(comp), st.text);
-            set(rowNew, 1, "new", st.text);
-            c = 2;
-            for (SizeKey s : sizes) {
-                ReportCalculator.Row rr = bySize.get(s.toString());
-                set(rowNew, c++, rr == null ? null : rr.newPrice.get(comp), st.num);
+            // ===== заголовок =====
+            Row r0 = sh.createRow(0);
+            int c = 0;
+            set(r0, c++, "Компания", head);
+            set(r0, c++, "Показатель", head);
+            for (SizeKey s : sizesOrdered) {
+                set(r0, c++, s.toString(), head);
             }
 
-            Row rowDelta = sh.createRow(r++);
-            set(rowDelta, 0, title(comp), st.text);
-            set(rowDelta, 1, "Δ(new−" + title(BASELINE) + ")", st.text);
-            c = 2;
-            for (SizeKey s : sizes) {
-                ReportCalculator.Row rr = bySize.get(s.toString());
-                BigDecimal vNew = (rr == null) ? null : rr.newPrice.get(comp);
-                BigDecimal vBase = baseNew.get(s);
-                BigDecimal delta = (vNew != null && vBase != null) ? vNew.subtract(vBase) : null;
-                set(rowDelta, c++, delta, st.num);
-            }
-        }
+            // порядок: baseline первым, затем остальные
+            List<Competitor> ordered = new ArrayList<>();
+            if (enabledOrdered.contains(baseline)) ordered.add(baseline);
+            for (Competitor comp : enabledOrdered) if (comp != baseline) ordered.add(comp);
 
-        // агрегаты
-        Row minRow = sh.createRow(r++);
-        set(minRow, 0, "", st.text);
-        set(minRow, 1, "min(new)", st.head);
-        c = 2;
-        for (SizeKey s : sizes) {
-            ReportCalculator.Row rr = bySize.get(s.toString());
-            set(minRow, c++, rr == null ? null : rr.minNew, st.num);
-        }
+            // ===== строки =====
+            int rowIdx = 1;
+            for (Competitor comp : ordered) {
+                // Строка "new"
+                Row newRow = sh.createRow(rowIdx++);
+                int cc = 0;
+                set(newRow, cc++, comp.title(), text);
+                set(newRow, cc++, "new", head);
+                for (SizeKey size : sizesOrdered) {
+                    BigDecimal price = snapshot.get(category, size, comp);
+                    set(newRow, cc++, price, num);
+                }
 
-        Row avgRow = sh.createRow(r++);
-        set(avgRow, 0, "", st.text);
-        set(avgRow, 1, "avg(new)", st.head);
-        c = 2;
-        for (SizeKey s : sizes) {
-            ReportCalculator.Row rr = bySize.get(s.toString());
-            set(avgRow, c++, rr == null ? null : rr.avgNew, st.num);
-        }
-
-        int lastRow = sh.getLastRowNum();
-        int lastCol = sh.getRow(r0).getLastCellNum() - 1;
-
-        for (int i = 0; i <= lastCol; i++) sh.autoSizeColumn(i);
-        sh.createFreezePane(2, r0 + 1);
-
-        var region = new CellRangeAddress(r0, lastRow, 0, lastCol);
-        borderRegion(sh, region);
-
-        // подсветка для Δ
-        SheetConditionalFormatting scf = sh.getSheetConditionalFormatting();
-        var red = scf.createConditionalFormattingRule(ComparisonOperator.GT, "0");
-        var redFill = red.createPatternFormatting();
-        redFill.setFillBackgroundColor(IndexedColors.ROSE.index);
-        redFill.setFillPattern(PatternFormatting.SOLID_FOREGROUND);
-
-        var green = scf.createConditionalFormattingRule(ComparisonOperator.LE, "0");
-        var greenFill = green.createPatternFormatting();
-        greenFill.setFillBackgroundColor(IndexedColors.LIGHT_GREEN.index);
-        greenFill.setFillPattern(PatternFormatting.SOLID_FOREGROUND);
-
-        for (int ri = r0 + 1; ri <= lastRow; ri++) {
-            Row row = sh.getRow(ri);
-            if (row == null) continue;
-            Cell metric = row.getCell(1);
-            if (metric != null && metric.getCellType() == CellType.STRING) {
-                String label = metric.getStringCellValue();
-                if (label != null && label.startsWith("Δ(")) {
-                    scf.addConditionalFormatting(new CellRangeAddress[]{ new CellRangeAddress(ri, ri, 2, lastCol) }, red, green);
+                // Строка "Δ(new-baseline)" — у baseline дельта пустая
+                Row dRow = sh.createRow(rowIdx++);
+                cc = 0;
+                set(dRow, cc++, "", text);
+                set(dRow, cc++, "Δ(new-" + baseline.title() + ")", head);
+                for (SizeKey size : sizesOrdered) {
+                    BigDecimal p = snapshot.get(category, size, comp);
+                    BigDecimal base = snapshot.get(category, size, baseline);
+                    if (comp == baseline || p == null || base == null) {
+                        set(dRow, cc++, (String) null, text);
+                    } else {
+                        BigDecimal d = p.subtract(base);
+                        set(dRow, cc++, d, d.signum() >= 0 ? diffPos : diffNeg);
+                    }
                 }
             }
+
+            // автоширина
+            for (int i = 0; i < c; i++) sh.autoSizeColumn(i);
+
+            // запись файла
+            if (out.getParent() != null) Files.createDirectories(out.getParent());
+            try (var os = Files.newOutputStream(out)) {
+                wb.write(os);
+            }
         }
+
+        log.info("[ExcelExporter] DONE: {}", out.toAbsolutePath());
     }
 
-    private static String title(Competitor c) {
-        return switch (c) {
-            case DEMIDOV -> "ГК Демидов";
-            default -> c.name();
-        };
-    }
+    // ==== helpers ====
 
-    private static String now() {
-        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-    }
-
-    private static void borderRegion(Sheet sh, CellRangeAddress region) {
-        RegionUtil.setBorderBottom(BorderStyle.THIN, region, sh);
-        RegionUtil.setBorderTop(BorderStyle.THIN, region, sh);
-        RegionUtil.setBorderLeft(BorderStyle.THIN, region, sh);
-        RegionUtil.setBorderRight(BorderStyle.THIN, region, sh);
-    }
-
-    private static void set(Row row, int col, String val, CellStyle st) {
-        Cell cell = row.createCell(col);
-        cell.setCellValue(val == null ? "" : val);
-        if (st != null) cell.setCellStyle(st);
-    }
-    private static void set(Row row, int col, BigDecimal val, CellStyle st) {
-        Cell cell = row.createCell(col);
-        if (val != null) cell.setCellValue(val.longValue());
+    private static void set(Row r, int col, String v, CellStyle st) {
+        Cell cell = r.createCell(col);
+        if (v != null) cell.setCellValue(v);
         if (st != null) cell.setCellStyle(st);
     }
 
-    private static final class Styles {
-        final CellStyle head, text, num, muted;
-        Styles(Workbook wb) {
-            DataFormat fmt = wb.createDataFormat();
-
-            head = wb.createCellStyle();
-            var fb = wb.createFont(); fb.setBold(true);
-            head.setFont(fb);
-            head.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
-            head.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            head.setAlignment(HorizontalAlignment.CENTER);
-            head.setVerticalAlignment(VerticalAlignment.CENTER);
-            borders(head);
-
-            text = wb.createCellStyle();
-            text.setVerticalAlignment(VerticalAlignment.CENTER);
-            borders(text);
-
-            num = wb.createCellStyle();
-            num.cloneStyleFrom(text);
-            num.setDataFormat(fmt.getFormat("#,##0"));
-
-            muted = wb.createCellStyle();
-            var fm = wb.createFont(); fm.setColor(IndexedColors.GREY_50_PERCENT.getIndex());
-            muted.setFont(fm);
-        }
-        private void borders(CellStyle s) {
-            s.setBorderBottom(BorderStyle.THIN);
-            s.setBorderTop(BorderStyle.THIN);
-            s.setBorderLeft(BorderStyle.THIN);
-            s.setBorderRight(BorderStyle.THIN);
-        }
+    private static void set(Row r, int col, BigDecimal v, CellStyle st) {
+        Cell cell = r.createCell(col);
+        if (v != null) cell.setCellValue(v.doubleValue());
+        if (st != null) cell.setCellStyle(st);
     }
 }

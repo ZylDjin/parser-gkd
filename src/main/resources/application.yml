@@ -11,12 +11,15 @@ app:
   maxPrice: 300000
 
   # Какие конкуренты включены в прогоне (по enum-имени)
-  competitorsEnabled: [AGRUPP, DEMIDOV]
+  competitorsEnabled:
+    - DEMIDOV
+    - AGRUPP
 
   # Базовые URL для парсеров (можно править не трогая код)
   competitorsBaseUrls:
-    AGRUPP: "https://ag.market/catalog/truby-stalnye/truby-profilnye/"
     DEMIDOV: "https://demidovsteel.ru/catalog/truby-profilnye/"
+    AGRUPP: "https://ag.market/catalog/truby-stalnye/truby-profilnye/"
+
 
 # Логи: делаем наш пакет информативным, а спринг не шумным
 logging:

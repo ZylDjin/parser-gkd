@@ -1,165 +1,154 @@
 package com.company.parser.core.parsers;
 
+import com.company.parser.config.SizesConfig;
+import com.company.parser.config.AppProperties;
 import com.company.parser.core.*;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.LoadState;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
 public class DemidovPlaywrightParser implements SiteParser {
 
-    private String baseUrl = "https://demidovsteel.ru/catalog/truby-profilnye/";
+    private static final Logger log = LoggerFactory.getLogger(DemidovPlaywrightParser.class);
 
-    public void setBaseUrl(String url) { this.baseUrl = url.endsWith("/") ? url : url + "/"; }
+    private final AppProperties props;     // для границ цен и debugDir
+    private final SizesConfig sizesConfig;
 
-    @Override public Competitor competitor() { return Competitor.DEMIDOV; }
+    public DemidovPlaywrightParser(AppProperties props, SizesConfig sizesConfig) {
+        this.props = props;
+        this.sizesConfig = sizesConfig;
+    }
+
+    @Override
+    public Competitor competitor() {
+        return Competitor.DEMIDOV;
+    }
 
     @Override
     public List<PriceVariant> fetch(Category category, SizeKey size) throws Exception {
+        String baseUrl = sizesConfig.baseUrl(category, competitor());
+        if (baseUrl == null) baseUrl = props.getCompetitorsBaseUrls().get(competitor());
+        if (baseUrl == null) throw new IllegalStateException("Base URL for DEMIDOV is not configured");
+
+        // Демидов использует точку в толщине: 25x25x1.5
+        String sizeSlug = size.width() + "x" + size.height() + "x" + size.thicknessDot(); // 40x20x1.5
+        String sizeUrl = joinUrl(baseUrl, sizeSlug) + "/";
+
         List<PriceVariant> out = new ArrayList<>();
 
-        // Рендерим категорию с догрузкой карточек
-        String htmlCat = loadRenderedCategory(baseUrl, Path.of("debug","debug_demidov_category.html"));
-        if (htmlCat != null) out.addAll(extractFromCategory(htmlCat, size));
-
-        if (out.isEmpty()) {
-            String htmlCat2 = loadRenderedCategory(baseUrl, Path.of("debug","debug_demidov_category_retry.html"));
-            if (htmlCat2 != null) out.addAll(extractFromCategory(htmlCat2, size));
-        }
-
-        System.out.println("[DEMIDOV/PW] total variants matched: " + out.size());
-        return out;
-    }
-
-    private String loadRenderedCategory(String url, Path dump) {
         try (Playwright pw = Playwright.create()) {
             Browser browser = pw.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true));
-            BrowserContext ctx = browser.newContext(new Browser.NewContextOptions().setViewportSize(1366, 2400));
+            BrowserContext ctx = browser.newContext();
             Page page = ctx.newPage();
-            page.setDefaultTimeout(30_000);
 
-            System.out.println("[DEMIDOV/PW] GET " + url);
-            page.navigate(url);
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            // 1) Пытаемся на странице конкретного размера
+            log.info("[DEMIDOV/PW] GET {}", sizeUrl);
+            page.navigate(sizeUrl);
+            // ждём, что прогрузится хоть что-то осмысленное
+            page.waitForLoadState(LoadState.NETWORKIDLE);
+            page.waitForTimeout(400); // небольшой буфер
+            save(page, "debug_demidov_size_" + sizeSlug.replace('.', '-'));
 
-            // согласия/куки
-            try { page.locator("button:has-text(\"Принять\"), button:has-text(\"Понятно\")").first().click(); } catch (Exception ignore) {}
+            List<BigDecimal> nearPrices = extractPricesNearSize(page.content(), size);
+            log.info("[DEMIDOV/PW] near-window matches (size page): {}", nearPrices.size());
+            for (BigDecimal p : nearPrices) out.add(new PriceVariant(p, "-"));
 
-            // проскроллим и прожмём "показать ещё"
-            for (int i = 0; i < 10; i++) { page.mouse().wheel(0, 1600); page.waitForTimeout(400); }
-            for (int i = 0; i < 6; i++) {
-                var more = page.locator("button:has-text(\"Показать ещё\"), button:has-text(\"Показать еще\"), button:has-text(\"Еще\")");
-                if (!more.isVisible()) break;
-                try { more.click(); page.waitForTimeout(900); } catch (Exception ignore) { break; }
+            // 2) Если не нашли на size-странице — идём в категорию и ищем «рядом» с размером
+            if (out.isEmpty()) {
+                log.info("[DEMIDOV/PW] GET {}", baseUrl);
+                page.navigate(baseUrl);
+                page.waitForLoadState(LoadState.NETWORKIDLE);
+                page.waitForTimeout(600);
+                save(page, "debug_demidov_category");
+
+                List<BigDecimal> nearCategory = extractPricesNearSize(page.content(), size);
+                log.info("[DEMIDOV/PW] near-window matches (category): {}", nearCategory.size());
+                for (BigDecimal p : nearCategory) out.add(new PriceVariant(p, "-"));
             }
 
-            page.waitForTimeout(700); // дать дорисовать цены
-            String html = page.content();
-            Files.createDirectories(dump.getParent());
-            Files.writeString(dump, html, StandardCharsets.UTF_8);
-            System.out.println("[DEMIDOV/PW] saved " + dump.toAbsolutePath());
+            page.close();
+            ctx.close();
             browser.close();
-            return html;
-        } catch (Exception e) {
-            System.out.println("[DEMIDOV/PW] WARN " + e.getMessage());
-            return null;
         }
-    }
 
-    private List<PriceVariant> extractFromCategory(String html, SizeKey size) {
-        Document doc = Jsoup.parse(html);
-        List<PriceVariant> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-
-        // эвристики карточек
-        var cards = doc.select("div.product-card, article.product-card, li.product-item, div.catalog-item, div.catalog__item");
-        if (cards.isEmpty()) cards = doc.select("div,li,article");
-
-        Pattern pSize = sizeRegex(size);
-
-        for (Element card : cards) {
-            Element titleEl = Optional.ofNullable(card.selectFirst(".product-card__title, .product-title, a, h3")).orElse(card);
-            String title = normalize(titleEl.text());
-            if (!pSize.matcher(title).find()) continue;
-
-            BigDecimal price = tryCardPrice(card);
-            if (price == null) price = tryNearRuble(card.text());
-            if (price == null) price = tryJsonLd(card);
-
-            if (price == null) continue;
-            if (!isSane(price)) continue;
-
-            if (!seen.add(price.toPlainString())) continue;
-
-            boolean gost = title.toUpperCase(Locale.ROOT).contains("ГОСТ");
-            boolean tu   = title.toUpperCase(Locale.ROOT).contains("ТУ");
-            out.add(new PriceVariant(price, gost, tu, "pw"));
-            System.out.println("[DEMIDOV/PW] MATCH size=" + size + " price=" + price);
-            if (out.size() >= 6) break;
-        }
+        log.info("[DEMIDOV/PW] total variants matched: {}", out.size());
         return out;
     }
 
-    private static BigDecimal tryCardPrice(Element card) {
-        String[] sels = {".product-card__price", ".price__current", ".product-price__current",
-                "[itemprop=price]", "meta[itemprop=price]"};
-        for (String s : sels) {
-            Element pe = card.selectFirst(s);
-            if (pe == null) continue;
-            String raw = pe.hasAttr("content") ? pe.attr("content") : pe.text();
-            BigDecimal v = parsePrice(raw);
-            if (v != null) return v;
+    // --- утилиты ---
+
+    private void save(Page page, String fileNameNoExt) {
+        try {
+            Path dir = Path.of(props.getDebugDir());
+            dir.toFile().mkdirs();
+            String p = dir.resolve(fileNameNoExt + ".html").toString();
+            page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve(fileNameNoExt + ".png")));
+            java.nio.file.Files.writeString(dir.resolve(fileNameNoExt + ".html"), page.content());
+            log.info("[DEMIDOV/PW] saved {}", p);
+        } catch (Exception ignore) {
         }
-        return null;
     }
 
-    private static BigDecimal tryNearRuble(String text) {
-        if (text != null && text.contains("₽")) return parsePrice(text);
-        return null;
+    private static String joinUrl(String base, String slug) {
+        if (!base.endsWith("/")) base = base + "/";
+        return base + slug;
     }
 
-    private static BigDecimal tryJsonLd(Element card) {
-        for (Element s : card.select("script[type=application/ld+json]")) {
-            BigDecimal v = parsePrice(s.data());
-            if (v != null) return v;
+    /**
+     * Ищем цену только в «окне» вокруг упоминания размера.
+     * Допускаем варианты записи: x/×, пробелы, запятая/точка в толщине.
+     */
+    private static List<BigDecimal> extractPricesNearSize(String html, SizeKey size) {
+        String sizeRegex = sizePattern(size); // толерантный паттерн для размера
+        Pattern needle = Pattern.compile(sizeRegex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+        List<int[]> windows = new ArrayList<>();
+        Matcher m = needle.matcher(html);
+        while (m.find()) {
+            int start = Math.max(0, m.start() - 800);
+            int end = Math.min(html.length(), m.end() + 800);
+            windows.add(new int[]{start, end});
         }
-        return null;
+
+        // если упоминаний размера нет — нечего пытаться
+        if (windows.isEmpty()) return List.of();
+
+        Pattern priceRe = Pattern.compile(
+                "(?<!\\d)(\\d{2}\\s?\\d{3}|\\d{5,6})(?=\\s*(?:₽|руб))",
+                Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+
+        List<BigDecimal> found = new ArrayList<>();
+        for (int[] w : windows) {
+            String chunk = html.substring(w[0], w[1]);
+            Matcher pm = priceRe.matcher(chunk);
+            while (pm.find()) {
+                String raw = pm.group(1).replace(" ", "");
+                try {
+                    BigDecimal val = new BigDecimal(raw);
+                    found.add(val);
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return found;
     }
 
-    private static boolean isSane(BigDecimal v) {
-        int val = v.intValue();
-        return (val >= 20000 && val <= 300000);
-    }
-
-    private static Pattern sizeRegex(SizeKey size) {
-        String a = size.a().stripTrailingZeros().toPlainString();
-        String b = size.b().stripTrailingZeros().toPlainString();
-        String t = size.t().stripTrailingZeros().toPlainString();
-        String x = "[x×Xх*]";
-        String sep = "\\s*";
-        String tAlt = t.contains(".") ? t.replace('.', ',') : t + "(?:[\\.,]0)?";
-        String mm = "(?:\\s*мм)?";
-        String p1 = a + sep + x + sep + b + sep + x + sep + tAlt + mm;
-        String p2 = b + sep + x + sep + a + sep + x + sep + tAlt + mm;
-        return Pattern.compile("(?i)(" + p1 + ")|(" + p2 + ")");
-    }
-
-    private static String normalize(String s) { return s == null ? "" : s.replace('\u00A0',' ').trim(); }
-
-    private static BigDecimal parsePrice(String raw) {
-        if (raw == null) return null;
-        String digits = raw.replaceAll("[^\\d]", "");
-        if (digits.isEmpty() || digits.length() > 8) return null;
-        try { return new BigDecimal(digits); } catch (NumberFormatException e) { return null; }
+    private static String sizePattern(SizeKey s) {
+        // Пример: 40x20x1.5  или 40 × 20 × 1,5  — допускаем x/×, пробелы, точка/запятая
+        String n1 = String.valueOf(s.width());
+        String n2 = String.valueOf(s.height());
+        String tDot = s.thicknessDot();      // "1.5"
+        String tComma = tDot.replace('.', ','); // "1,5"
+        String x = "[x×]"; // символ умножения
+        String sp = "\\s*";
+        return n1 + sp + x + sp + n2 + sp + x + sp + "(" + Pattern.quote(tDot) + "|" + Pattern.quote(tComma) + ")";
     }
 }
