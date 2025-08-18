@@ -1,57 +1,66 @@
 package com.company.parser.core;
 
+import com.company.parser.core.parsers.SiteParser;
+import org.springframework.stereotype.Service;
+
 import java.math.BigDecimal;
 import java.util.*;
 
+@Service
 public class ReportCalculator {
 
-    public static class Row {
+    public static final class Row {
         public final SizeKey size;
-        public final Map<Competitor, BigDecimal> oldPrice = new EnumMap<>(Competitor.class);
-        public final Map<Competitor, BigDecimal> newPrice = new EnumMap<>(Competitor.class);
-        public final Map<Competitor, BigDecimal> diff     = new EnumMap<>(Competitor.class); // стар - нов
+        public final EnumMap<Competitor, BigDecimal> oldPrice = new EnumMap<>(Competitor.class);
+        public final EnumMap<Competitor, BigDecimal> newPrice = new EnumMap<>(Competitor.class);
+        public final EnumMap<Competitor, BigDecimal> diff     = new EnumMap<>(Competitor.class);
         public BigDecimal minNew, avgNew, deltaFromOur;
-        public Row(SizeKey size){ this.size = size; }
+
+        public Row(SizeKey size) { this.size = size; }
     }
 
     public Row calcRow(Category cat, SizeKey size,
-                       List<? extends SiteParser> parsers,
+                       List<SiteParser> parsers,
                        PriceSelectorService selector,
                        Snapshot oldSnap,
                        Map<SizeKey, BigDecimal> ourPrice) throws Exception {
+
         Row r = new Row(size);
 
-        // заполняем старые цены
-        for (Competitor comp : Competitor.values()) {
-            r.oldPrice.put(comp, oldSnap.get(cat, size, comp));
+        // 1) читаем old из снапшота
+        for (Competitor c : Competitor.values()) {
+            BigDecimal old = oldSnap.get(cat, size, c);
+            if (old != null) r.oldPrice.put(c, old);
         }
 
-        // получаем «новые» цены от парсеров и применяем правила выбора
-        List<BigDecimal> newVals = new ArrayList<>();
-        for (SiteParser sp : parsers) {
-            var variants = sp.fetch(cat, size);
-            BigDecimal chosen = selector.choose(variants);
-            r.newPrice.put(sp.competitor(), chosen);
-            if (chosen != null) newVals.add(chosen);
+        // 2) собираем варианты new у каждого парсера
+        for (SiteParser p : parsers) {
+            var variants = p.fetch(cat, size);
+            BigDecimal sel = selector.selectNewPrice(variants);
+            if (sel != null) r.newPrice.put(p.competitor(), sel);
         }
 
-        // diff = стар - нов
-        for (Competitor comp : Competitor.values()) {
-            BigDecimal o = r.oldPrice.get(comp);
-            BigDecimal n = r.newPrice.get(comp);
-            if (o != null && n != null) r.diff.put(comp, o.subtract(n));
+        // 3) diff (new - old)
+        for (Competitor c : Competitor.values()) {
+            BigDecimal n = r.newPrice.get(c);
+            BigDecimal o = r.oldPrice.get(c);
+            if (n != null && o != null) r.diff.put(c, n.subtract(o));
         }
 
-        // min/avg по новым
-        r.minNew = newVals.stream().min(Comparator.naturalOrder()).orElse(null);
-        if (!newVals.isEmpty()) {
-            BigDecimal sum = newVals.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-            r.avgNew = sum.divide(BigDecimal.valueOf(newVals.size()), BigDecimal.ROUND_HALF_UP);
+        // 4) агрегаты
+        if (!r.newPrice.isEmpty()) {
+            var values = r.newPrice.values().stream().filter(Objects::nonNull).toList();
+            if (!values.isEmpty()) {
+                r.minNew = values.stream().min(Comparator.naturalOrder()).orElse(null);
+                r.avgNew = values.stream().mapToLong(BigDecimal::longValue).average().isPresent()
+                        ? BigDecimal.valueOf(values.stream().mapToLong(BigDecimal::longValue).average().getAsDouble()).setScale(0, BigDecimal.ROUND_HALF_UP)
+                        : null;
+            }
         }
 
-        // дельта от нашей = min(new) - our
+        // 5) delta(min - our) — чтобы не ломать старый консольный вывод (в Excel не используется)
         BigDecimal our = ourPrice.get(size);
-        if (r.minNew != null && our != null) r.deltaFromOur = r.minNew.subtract(our);
+        if (our != null && r.minNew != null) r.deltaFromOur = r.minNew.subtract(our);
 
         return r;
     }

@@ -1,69 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <parent>
+        <!-- Spring Boot управляет версиями большинства либ и логированием -->
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.2</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
     <groupId>com.company</groupId>
-    <artifactId>price-parser</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
-    <name>price-parser</name>
+    <artifactId>parser-gkd</artifactId>
+    <version>1.0.0</version>
+    <name>parser-gkd</name>
+    <description>Ценовой парсер (Spring Boot + Playwright + Jsoup + POI)</description>
     <packaging>jar</packaging>
 
     <properties>
+        <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Требует установленный JDK 21 -->
-        <maven.compiler.release>21</maven.compiler.release>
+
+        <!-- версии библиотек, которые не управляются Spring Boot -->
+        <jsoup.version>1.17.2</jsoup.version>
+        <poi.version>5.2.5</poi.version>
+        <playwright.version>1.47.0</playwright.version>
     </properties>
 
     <dependencies>
+        <!-- Базовый стартер: логирование (Logback), автоконфигурация, пр. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- Генерация метаданных для @ConfigurationProperties (опционально) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- HTML парсинг -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
-            <version>1.17.2</version>
+            <version>${jsoup.version}</version>
         </dependency>
+
+        <!-- Playwright для headless-браузера -->
         <dependency>
             <groupId>com.microsoft.playwright</groupId>
             <artifactId>playwright</artifactId>
-            <version>1.47.0</version>
+            <version>${playwright.version}</version>
+        </dependency>
+
+        <!-- Экспорт в Excel -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>${poi.version}</version>
+        </dependency>
+
+        <!-- (опционально) commons-io, если где-то используешь -->
+        <!--
+        <dependency>
+          <groupId>commons-io</groupId>
+          <artifactId>commons-io</artifactId>
+          <version>2.16.1</version>
+        </dependency>
+        -->
+
+        <!-- Тесты -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
         </dependency>
     </dependencies>
 
     <build>
         <plugins>
-            <!-- Компилятор на Java 21 -->
+            <!-- компиляция под нужную версию Java -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.13.0</version>
                 <configuration>
-                    <release>${maven.compiler.release}</release>
+                    <release>${java.version}</release>
+                    <compilerArgs>
+                        <arg>-parameters</arg>
+                    </compilerArgs>
                 </configuration>
             </plugin>
 
-            <!-- Прописать главный класс в манифест, чтобы запускать java -jar -->
+            <!-- упаковка исполняемого JAR и цель spring-boot:run -->
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <version>3.3.0</version>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <archive>
-                        <manifest>
-                            <mainClass>com.company.parser.core.DevRunner</mainClass>
-                        </manifest>
-                    </archive>
-                </configuration>
-            </plugin>
-
-            <!-- Удобный запуск: mvn -q exec:java -->
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
-                <configuration>
-                    <mainClass>com.company.parser.core.DevRunner</mainClass>
+                    <mainClass>com.company.parser.ParserApplication</mainClass>
                 </configuration>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Профиль для быстрого запуска без тестов -->
+        <profile>
+            <id>dev</id>
+            <properties>
+                <skipTests>true</skipTests>
+            </properties>
+        </profile>
+    </profiles>
 </project>

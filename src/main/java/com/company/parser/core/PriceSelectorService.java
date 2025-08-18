@@ -1,25 +1,43 @@
 package com.company.parser.core;
 
+import com.company.parser.config.AppProperties;
+import com.company.parser.core.parsers.SiteParser;
+import org.springframework.stereotype.Service;
+
 import java.math.BigDecimal;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 
-public final class PriceSelectorService {
-    public BigDecimal choose(List<PriceVariant> variants) {
-        if (variants == null || variants.isEmpty()) return null;
+/** Выбор «правильной» цены из вариантов, c фильтром адекватности и приоритетом ГОСТ. */
+@Service
+public class PriceSelectorService {
 
-        List<PriceVariant> gost = variants.stream().filter(PriceVariant::gost).toList();
-        if (!gost.isEmpty()) return midMinMax(gost);
+    private final int minPrice;
+    private final int maxPrice;
 
-        List<PriceVariant> tu = variants.stream().filter(PriceVariant::tu).toList();
-        if (!tu.isEmpty()) return midMinMax(tu);
-
-        return midMinMax(variants); // если меток нет — по всем
+    public PriceSelectorService(AppProperties props) {
+        this.minPrice = props.getMinPrice();
+        this.maxPrice = props.getMaxPrice();
     }
 
-    private static BigDecimal midMinMax(List<PriceVariant> list) {
-        BigDecimal min = list.stream().map(PriceVariant::price).min(Comparator.naturalOrder()).orElse(null);
-        BigDecimal max = list.stream().map(PriceVariant::price).max(Comparator.naturalOrder()).orElse(null);
-        return (min == null || max == null) ? null : min.add(max).divide(BigDecimal.valueOf(2));
+    public BigDecimal selectNewPrice(List<PriceVariant> variants) {
+        if (variants == null || variants.isEmpty()) return null;
+
+        return variants.stream()
+                .filter(Objects::nonNull)
+                .filter(v -> v.price() != null)
+                .filter(v -> isSane(v.price()))
+                // приоритет ГОСТ, затем минимальная цена
+                .sorted(Comparator
+                        .comparing(PriceVariant::gost).reversed()
+                        .thenComparing(PriceVariant::price))
+                .map(PriceVariant::price)
+                .findFirst().orElse(null);
+    }
+
+    private boolean isSane(BigDecimal price) {
+        int p = price.intValue();
+        return p >= minPrice && p <= maxPrice;
     }
 }
