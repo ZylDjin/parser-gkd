@@ -1,0 +1,36 @@
+# Список площадок. Можно добавлять новых продавцов без перекомпиляции —
+# просто дописывайте блок внизу с их селекторами.
+sites:
+  - id: demidov
+    startUrl: "https://demidovsteel.ru/catalog/truby-profilnye/"
+    # Карточки на листинге
+    listSelector: ".catalog__list .catalog-item, .product-list .product-card, .products-list .product-card"
+    # Название товара (в карточке)
+    nameSelector: ".catalog-item__title, .product-card__title, .product-title, h3, h2"
+    # Цена в карточке
+    priceSelector: ".price, .product-price, [class*=price__current], [itemprop=price]"
+    # Ссылка на карточку
+    urlSelector: "a[href]"
+    # Кнопка/ссылка следующей страницы
+    nextPageSelector: "a[rel=next], .pagination__next, a:matchesOwn(Следующая|Следующая страница|Далее)"
+    # Блок с размерами/характеристиками (и на листинге, и внутри карточки)
+    sizeSelector: ".props, .attr, .chars, .specs, .characteristics, .product__attributes"
+
+  - id: agmarket
+    startUrl: "https://ag.market/catalog/truby-stalnye/truby-profilnye/"
+    listSelector: ".products-list .product-card, .catalog__list .product-card, .product-list .product-card"
+    nameSelector: ".product-card__title, .product-title, h3, h2"
+    priceSelector: ".product-card__price, .price, [class*=price__current], [itemprop=price]"
+    urlSelector: "a[href]"
+    nextPageSelector: "a[rel=next], .pagination__next, a:matchesOwn(Следующая|Далее)"
+    sizeSelector: ".props, .char, .specs, .characteristics, .product__attributes"
+
+  # Шаблон для добавления нового продавца:
+  # - id: newshop
+  #   startUrl: "https://newshop.example/catalog/truby-profilnye/"
+  #   listSelector: ".product-card"
+  #   nameSelector: ".product-title"
+  #   priceSelector: ".price"
+  #   urlSelector: "a[href]"
+  #   nextPageSelector: "a[rel=next], .pager__next"
+  #   sizeSelector: ".specs, .chars"

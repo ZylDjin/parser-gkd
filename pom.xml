@@ -1,124 +1,395 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <!-- Spring Boot управляет версиями большинства либ и логированием -->
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.2</version>
-        <relativePath/> <!-- lookup parent from repository -->
-    </parent>
-
+    <!-- Основная информация о проекте -->
     <groupId>com.company</groupId>
-    <artifactId>parser-gkd</artifactId>
-    <version>1.0.0</version>
-    <name>parser-gkd</name>
-    <description>Ценовой парсер (Spring Boot + Playwright + Jsoup + POI)</description>
+    <artifactId>steel-parser</artifactId>
+    <version>2.0.0</version>
     <packaging>jar</packaging>
 
+    <name>Steel Parser</name>
+    <description>Price monitoring system for steel products</description>
+
+    <!-- Свойства и версии -->
     <properties>
-        <java.version>17</java.version>
+        <!-- Java -->
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- версии библиотек, которые не управляются Spring Boot -->
+        <!-- Spring Boot -->
+        <spring.boot.version>3.2.1</spring.boot.version>
+
+        <!-- Основные зависимости -->
         <jsoup.version>1.17.2</jsoup.version>
         <poi.version>5.2.5</poi.version>
-        <playwright.version>1.47.0</playwright.version>
+        <jackson.version>2.16.1</jackson.version>
+        <caffeine.version>3.1.8</caffeine.version>
+        <lombok.version>1.18.30</lombok.version>
+
+        <!-- Добавленные зависимости -->
+        <shedlock.version>5.10.0</shedlock.version>
+        <hikaricp.version>5.1.0</hikaricp.version>
+        <micrometer.version>1.12.1</micrometer.version>
+
+        <!-- Тестирование -->
+        <junit.version>5.10.1</junit.version>
+        <mockito.version>5.8.0</mockito.version>
+        <assertj.version>3.25.1</assertj.version>
+
+        <!-- Плагины -->
+        <maven-compiler-plugin.version>3.12.1</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.2.3</maven-surefire-plugin.version>
     </properties>
 
+    <!-- Управление зависимостями Spring Boot -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
-        <!-- Базовый стартер: логирование (Logback), автоконфигурация, пр. -->
+        <!-- ============================================ -->
+        <!-- CORE: Обязательные зависимости              -->
+        <!-- ============================================ -->
+
+        <!-- Spring Boot Starter (базовый функционал) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
-        <!-- Генерация метаданных для @ConfigurationProperties (опционально) -->
+        <!-- Поддержка конфигурационных свойств -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
 
-        <!-- HTML парсинг -->
+        <!-- Валидация -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- AOP поддержка (нужна для @Async, @Scheduled и т.д.) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- SCHEDULING: Планировщик и блокировки        -->
+        <!-- ============================================ -->
+
+        <!-- ShedLock для распределенных блокировок -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+
+        <!-- ShedLock Provider для JDBC (если используется БД) -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- DATABASE: База данных (опционально)         -->
+        <!-- ============================================ -->
+
+        <!-- JDBC Starter (нужен для ShedLock JDBC provider) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- HikariCP - пул соединений (включен в spring-boot-starter-jdbc) -->
+        <!-- Но можно указать явно для управления версией -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>${hikaricp.version}</version>
+        </dependency>
+
+        <!-- H2 Database для тестирования/разработки -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- MONITORING: Метрики (опционально)           -->
+        <!-- ============================================ -->
+
+        <!-- Actuator для health checks -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Micrometer для метрик -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+        </dependency>
+
+        <!-- Prometheus registry (опционально) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <version>${micrometer.version}</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- WEB: REST API (опционально)                 -->
+        <!-- ============================================ -->
+
+        <!-- Spring Web для REST контроллеров -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Security для API (опционально) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Swagger/OpenAPI документация (опционально) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- PARSING: Для парсинга HTML                  -->
+        <!-- ============================================ -->
+
+        <!-- JSoup - парсинг HTML -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
             <version>${jsoup.version}</version>
         </dependency>
 
-        <!-- Playwright для headless-браузера -->
-        <dependency>
-            <groupId>com.microsoft.playwright</groupId>
-            <artifactId>playwright</artifactId>
-            <version>${playwright.version}</version>
-        </dependency>
+        <!-- ============================================ -->
+        <!-- EXCEL: Для работы с Excel                   -->
+        <!-- ============================================ -->
 
-        <!-- Экспорт в Excel -->
+        <!-- Apache POI - работа с Excel -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
         </dependency>
 
-        <!-- (опционально) commons-io, если где-то используешь -->
-        <!--
-        <dependency>
-          <groupId>commons-io</groupId>
-          <artifactId>commons-io</artifactId>
-          <version>2.16.1</version>
-        </dependency>
-        -->
+        <!-- ============================================ -->
+        <!-- YAML/JSON: Для конфигураций                 -->
+        <!-- ============================================ -->
 
-        <!-- Тесты -->
+        <!-- Jackson для YAML -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- Jackson для работы с датами -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- CACHING: Кэширование                        -->
+        <!-- ============================================ -->
+
+        <!-- Spring Cache -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+
+        <!-- Caffeine Cache -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>${caffeine.version}</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- EMAIL: Отправка уведомлений (опционально)   -->
+        <!-- ============================================ -->
+
+        <!-- Mail starter -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- SCHEDULING: Планировщик задач               -->
+        <!-- ============================================ -->
+
+        <!-- Quartz scheduler (опционально, альтернатива встроенному) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-quartz</artifactId>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- UTILITIES: Вспомогательные библиотеки       -->
+        <!-- ============================================ -->
+
+        <!-- Lombok - сокращение boilerplate кода -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Apache Commons Lang - утилиты -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.14.0</version>
+        </dependency>
+
+        <!-- Guava (опционально, полезные утилиты) -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>32.1.3-jre</version>
+        </dependency>
+
+        <!-- ============================================ -->
+        <!-- TESTING: Для тестирования                   -->
+        <!-- ============================================ -->
+
+        <!-- Spring Boot Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.junit.vintage</groupId>
+                    <artifactId>junit-vintage-engine</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
+
+        <!-- Mockito для моков -->
         <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>2.2</version>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- AssertJ для удобных assertions -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
+    <!-- Сборка проекта -->
     <build>
-        <plugins>
-            <!-- компиляция под нужную версию Java -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <release>${java.version}</release>
-                    <compilerArgs>
-                        <arg>-parameters</arg>
-                    </compilerArgs>
-                </configuration>
-            </plugin>
+        <finalName>${project.artifactId}</finalName>
 
-            <!-- упаковка исполняемого JAR и цель spring-boot:run -->
+        <plugins>
+            <!-- Spring Boot Maven Plugin -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring.boot.version}</version>
                 <configuration>
-                    <mainClass>com.company.parser.ParserApplication</mainClass>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Компилятор -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <release>${java.version}</release>
+                    <encoding>UTF-8</encoding>
+                    <parameters>true</parameters>
+                    <annotationProcessorPaths>
+                        <!-- Lombok processor -->
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                        <!-- Spring Boot Configuration Processor -->
+                        <path>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-configuration-processor</artifactId>
+                            <version>${spring.boot.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- Тестирование -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                </configuration>
+            </plugin>
+
+            <!-- Ресурсы -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <configuration>
+                    <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
         </plugins>
     </build>
-
-    <profiles>
-        <!-- Профиль для быстрого запуска без тестов -->
-        <profile>
-            <id>dev</id>
-            <properties>
-                <skipTests>true</skipTests>
-            </properties>
-        </profile>
-    </profiles>
 </project>

@@ -1,29 +1,110 @@
 app:
-  # Куда писать Excel-отчёт
-  exportPath: report.xlsx
+  output:
+    dir: ./out
+    templatePath: ./templates/price-template.xlsx
+    archiveEnabled: true
+    archiveDir: ./out/archive
 
-  # Где лежит конфиг размеров (наш YAML)
-  # можно: classpath:config/sizes.yml  или file:./config/sizes.yml
-  sizesResource: classpath:config/sizes.yml
+  http:
+    timeoutSec: 30
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    maxRetries: 3
+    retryDelayMs: 1000
+    maxConcurrentRequests: 10
+    rateLimitPerSecond: 5
+    cacheEnabled: true
+    cacheTtlMinutes: 5
 
-  # Санити-фильтр цен (игнорируем слишком маленькие/большие)
-  minPrice: 20000
-  maxPrice: 300000
+  yaml:
+    sites: "classpath:config/sites.yml"
+    sizes: "classpath:config/sizes.yml"
 
-  # Какие конкуренты включены в прогоне (по enum-имени)
-  competitorsEnabled:
-    - DEMIDOV
-    - AGRUPP
+  compare:
+    baseSiteId: "demidov"
+    createSheet: true
+    priceChangeThresholdPercent: 5
+    criticalChangeThresholdPercent: 15
 
-  # Базовые URL для парсеров (можно править не трогая код)
-  competitorsBaseUrls:
-    DEMIDOV: "https://demidovsteel.ru/catalog/truby-profilnye/"
-    AGRUPP: "https://ag.market/catalog/truby-stalnye/truby-profilnye/"
+  notification:
+    enabled: true
+    recipients:
+      - "manager@company.com"
+      - "purchasing@company.com"
+    minIntervalHours: 24
+    smtp:
+      host: smtp.gmail.com
+      port: 587
+      username: ${SMTP_USERNAME}
+      password: ${SMTP_PASSWORD}
+      properties:
+        mail.smtp.auth: true
+        mail.smtp.starttls.enable: true
 
+  persistence:
+    enabled: true
+    dataDir: ./data
+    archiveDir: ./data/archive
+    historyDays: 30
+    compressionEnabled: true
 
-# Логи: делаем наш пакет информативным, а спринг не шумным
+  scheduler:
+    enabled: false
+    cronExpression: "0 0 8,14,20 * * *"  # 8:00, 14:00, 20:00 каждый день
+    timezone: "Europe/Moscow"
+
+  monitoring:
+    enabled: true
+    metricsEnabled: true
+    healthCheckEnabled: true
+
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+
+  task:
+    execution:
+      pool:
+        core-size: 5
+        max-size: 20
+        queue-capacity: 100
+
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=10m
+
+  mail:
+    host: ${app.notification.smtp.host}
+    port: ${app.notification.smtp.port}
+    username: ${app.notification.smtp.username}
+    password: ${app.notification.smtp.password}
+    properties:
+      mail.smtp.auth: ${app.notification.smtp.properties.mail.smtp.auth}
+      mail.smtp.starttls.enable: ${app.notification.smtp.properties.mail.smtp.starttls.enable}
+
 logging:
   level:
     root: INFO
-    org.springframework: WARN
-    com.company.parser: INFO
+    com.company.parser: DEBUG
+    org.springframework: INFO
+    org.apache.http: WARN
+
+  file:
+    name: ./logs/parser.log
+    max-size: 10MB
+    max-history: 30
+
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  simple:
+    metrics:
+      export:
+        enabled: true
