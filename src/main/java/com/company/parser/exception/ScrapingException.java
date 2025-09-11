@@ -9,7 +9,7 @@ public class ScrapingException extends ParserException {
     private String url;
     private int statusCode;
 
-    public ScrapingException(String message) {
+    public ScrapingException(String message, String url, Exception e) {
         super(message);
     }
 

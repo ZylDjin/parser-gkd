@@ -77,6 +77,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Retry -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
+
+        <!-- Spring Aspects (нужен для Retry) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-aspects</artifactId>
+        </dependency>
+
         <!-- Валидация -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

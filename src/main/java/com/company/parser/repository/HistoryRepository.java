@@ -120,26 +120,35 @@ public class HistoryRepository {
 
     private void loadHistory() {
         Path filePath = Paths.get(HISTORY_DIR, HISTORY_FILE);
-        if (!Files.exists(filePath)) {
-            return;
-        }
+        if (!Files.isRegularFile(filePath)) return;
 
-        try (InputStream is = Files.newInputStream(filePath);
-             GZIPInputStream gzis = new GZIPInputStream(is)) {
+        try (InputStream fis = Files.newInputStream(filePath);
+             InputStream in  = isGzip(fis) ? new GZIPInputStream(fis) : fis) {
 
-            Map<String, List<PriceHistory>> loaded = objectMapper.readValue(gzis,
-                    objectMapper.getTypeFactory().constructMapType(
-                            HashMap.class,
-                            String.class,
-                            objectMapper.getTypeFactory().constructCollectionType(List.class, PriceHistory.class)
-                    ));
+            var tf = objectMapper.getTypeFactory();
+            var keyType   = tf.constructType(String.class);
+            var valueType = tf.constructCollectionType(List.class, PriceHistory.class); // List<PriceHistory>
+            var mapType   = tf.constructMapType(Map.class, keyType, valueType);        // Map<String, List<PriceHistory>>
 
+            Map<String, List<PriceHistory>> loaded = objectMapper.readValue(in, mapType);
+            if (loaded == null) loaded = Map.of();
+
+            historyCache.clear();
             historyCache.putAll(loaded);
             log.info("Loaded price history for {} products", historyCache.size());
 
         } catch (IOException e) {
-            log.error("Failed to load history from file", e);
+            log.error("Failed to load history from file {}", filePath.toAbsolutePath(), e);
         }
+    }
+
+    /** Проверяем сигнатуру GZIP (0x1F 0x8B), не закрывая поток. */
+    private boolean isGzip(InputStream is) throws IOException {
+        if (!is.markSupported()) is = new BufferedInputStream(is);
+        is.mark(2);
+        int b1 = is.read(), b2 = is.read();
+        is.reset();
+        return b1 == 0x1f && b2 == 0x8b;
     }
 
     private void saveToFile() {

@@ -6,7 +6,6 @@ import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
 import net.javacrumbs.shedlock.spring.annotation.EnableSchedulerLock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.task.TaskSchedulerBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,9 +17,7 @@ import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
 import javax.sql.DataSource;
 import java.time.Duration;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.*;
 
 /**
  * Конфигурация планировщика задач
@@ -70,22 +67,30 @@ public class SchedulerConfig implements SchedulingConfigurer {
     @Bean
     @ConditionalOnProperty(name = "app.scheduler.useVirtualThreads", havingValue = "true")
     public TaskScheduler virtualThreadTaskScheduler() {
-        return new TaskSchedulerBuilder()
-                .poolSize(10)
-                .threadNamePrefix("virtual-scheduler-")
-                .taskDecorator(runnable -> {
-                    return () -> {
-                        try {
-                            log.debug("Starting scheduled task");
-                            runnable.run();
-                            log.debug("Scheduled task completed");
-                        } catch (Exception e) {
-                            log.error("Error in scheduled task", e);
-                            throw e;
-                        }
-                    };
-                })
-                .build();
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler() {
+            @Override
+            protected ExecutorService initializeExecutor(
+                    ThreadFactory threadFactory, RejectedExecutionHandler rejectedExecutionHandler) {
+                // Используем виртуальные потоки вместо платформенных
+                return Executors.newScheduledThreadPool(10, Thread.ofVirtual()
+                        .name("virtual-scheduler-", 0)
+                        .factory());
+            }
+        };
+
+        scheduler.setPoolSize(10);
+        scheduler.setThreadNamePrefix("virtual-scheduler-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(60);
+
+        scheduler.setRejectedExecutionHandler((r, executor) -> {
+            log.warn("Задача отклонена: {}", r.toString());
+        });
+
+        scheduler.initialize();
+
+        log.info("Планировщик с виртуальными потоками инициализирован с размером пула: 10");
+        return scheduler;
     }
 
     /**
